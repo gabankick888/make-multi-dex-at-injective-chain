@@ -1,0 +1,153 @@
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface IERC20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+}
+
+interface IDexRouter {
+    function swapExactTokensForTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+}
+
+contract InjectiveMultiDEX {
+
+    address public owner;
+
+    struct Router {
+        address routerAddress;
+        bool active;
+    }
+
+    mapping(uint256 => Router) public routers;
+    uint256 public routerCount;
+
+    event RouterAdded(uint256 indexed id, address router);
+    event RouterRemoved(uint256 indexed id);
+
+    event SwapExecuted(
+        address indexed user,
+        uint256 indexed routerId,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 amountOut
+    );
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    // Add DEX router
+    function addRouter(address _router) external onlyOwner {
+        require(_router != address(0), "Invalid router");
+
+        routers[routerCount] = Router({
+            routerAddress: _router,
+            active: true
+        });
+
+        emit RouterAdded(routerCount, _router);
+
+        routerCount++;
+    }
+
+    // Disable DEX router
+    function removeRouter(uint256 _id) external onlyOwner {
+        require(routers[_id].active, "Router inactive");
+
+        routers[_id].active = false;
+
+        emit RouterRemoved(_id);
+    }
+
+    // Swap using selected DEX
+    function swap(
+        uint256 routerId,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint256 deadline
+    ) external returns (uint256 amountOut) {
+
+        Router memory selectedRouter = routers[routerId];
+
+        require(selectedRouter.active, "Router unavailable");
+        require(tokenIn != tokenOut, "Same token");
+        require(amountIn > 0, "Invalid amount");
+        require(block.timestamp <= deadline, "Expired");
+
+        require(
+            IERC20(tokenIn).transferFrom(
+                msg.sender,
+                address(this),
+                amountIn
+            ),
+            "Transfer failed"
+        );
+
+        require(
+            IERC20(tokenIn).approve(
+                selectedRouter.routerAddress,
+                0
+            ),
+            "Reset approve failed"
+        );
+
+        require(
+            IERC20(tokenIn).approve(
+                selectedRouter.routerAddress,
+                amountIn
+            ),
+            "Approve failed"
+        );
+
+        address[] memory path = new address[](2);
+        path[0] = tokenIn;
+        path[1] = tokenOut;
+
+        uint256[] memory amounts =
+            IDexRouter(selectedRouter.routerAddress)
+            .swapExactTokensForTokens(
+                amountIn,
+                minAmountOut,
+                path,
+                msg.sender,
+                deadline
+            );
+
+        amountOut = amounts[amounts.length - 1];
+
+        emit SwapExecuted(
+            msg.sender,
+            routerId,
+            tokenIn,
+            tokenOut,
+            amountIn,
+            amountOut
+        );
+    }
+
+    // Transfer contract ownership
+    function transferOwnership(address newOwner)
+        external
+        onlyOwner
+    {
+        require(newOwner != address(0), "Invalid owner");
+        owner = newOwner;
+    }
+}
